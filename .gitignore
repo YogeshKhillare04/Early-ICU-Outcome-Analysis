@@ -1,0 +1,41 @@
+# Generated files and local data for the ICU mortality project.
+
+# Local PhysioNet data and processed outputs.
+data/raw/set-a/
+data/raw/set-b/
+data/raw/set-c/
+data/raw/Outcomes-a.txt
+data/raw/Outcomes-b.txt
+data/raw/Outcomes-c.txt
+data/processed/*.parquet
+data/processed/*.parquet.tmp
+data/processed/*.csv
+data/processed/*.npy
+
+# Trained model artifacts.
+models/
+*.joblib
+*.pkl
+*.npy
+*.pth
+*.pt
+
+# Logs.
+logs/
+*.log
+
+# Local environments and Python caches.
+venv/
+.conda/
+.env
+__pycache__/
+src/__pycache__/
+api/__pycache__/
+app/__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS metadata.
+.DS_Store
+Thumbs.db
+
