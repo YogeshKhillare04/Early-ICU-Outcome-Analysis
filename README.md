@@ -186,17 +186,13 @@ icu-mortality-prediction/
 This project does not use LangChain or a language model. The inputs are structured
 clinical measurements.
 
-## Setup
+## Setup and running
 
-Create a virtual environment, activate it, and install the dependencies:
-
-```bash
-python -m venv .venv
-```
-
-Windows PowerShell:
+From the repository folder, create a virtual environment and install the dependencies:
 
 ```powershell
+cd icu-mortality-prediction
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
@@ -218,51 +214,64 @@ Train on the combined development data:
 python -m src.train_combined
 ```
 
-Evaluate on Set C:
+### Run the tests
 
-```bash
-python -m src.test_set_c
-```
-
-Start the API in one terminal:
-
-```bash
-uvicorn api.main:app --port 8000
-```
-
-Start the Streamlit interface in another terminal:
-
-```bash
-streamlit run app/streamlit_ui.py
-```
-
-The API expects the trained artifact in the configured model directory. Run training
-first if `models/hybrid_ensemble_core.joblib` is not already present.
-
-## Tests
-
-The repository includes a small test suite that runs without the full PhysioNet dataset
-or a trained model:
+The tests do not need the full PhysioNet dataset or a trained model:
 
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
+### Train the model
+
+Place the PhysioNet files under `data/raw/set-a`, `data/raw/set-b`, and
+`data/raw/set-c` first. To train the main model on Set A:
+
+```powershell
+
+Start the API in one terminal:
+
+The combined training script is optional:
+uvicorn api.main:app --port 8000
+```powershell
+
+Start the Streamlit interface in another terminal:
+
+After training, the model bundle is saved as
+`models/hybrid_ensemble_core.joblib`.
+
+### Evaluate Set C
+
+```powershell
+streamlit run app/streamlit_ui.py
+```
+
+### Start the API
+
+Open a terminal in the repository folder and run:
+first if `models/hybrid_ensemble_core.joblib` is not already present.
+```powershell
+## Tests
+
+The repository includes a small test suite that runs without the full PhysioNet dataset
+The API is then available at `http://127.0.0.1:8000`. The interactive API
+documentation is at `http://127.0.0.1:8000/docs`.
+
+In a second terminal, activate the same environment and start the dashboard:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+The Streamlit page uses the API running on port `8000`. Keep both terminals open
+while using the dashboard.
+
 These tests cover repository-local paths, parsing of missing values, and the 48-hour
 feature cutoff. The full training and API paths still require the dataset and installed
 runtime dependencies described above.
-
-## API examples
-
-### Predict one patient
-
-`POST /predict`
-
-```json
-{
-  "Age": 72,
-  "Gender": 1,
-  "Observations": [
+The full training and API paths require the dataset and installed runtime dependencies
+described above.
     {"Parameter": "HR", "Value": 118},
     {"Parameter": "GCS", "Value": 8},
     {"Parameter": "SysABP", "Value": 82},
