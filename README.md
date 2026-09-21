@@ -198,44 +198,21 @@ pip install -r requirements.txt
 ```
 
 Place the PhysioNet files under `data/raw/set-a`, `data/raw/set-b`, and
-`data/raw/set-c` before running the training scripts.
-
-## Run the project
-
-Train on Set A only:
-
-```bash
-python -m src.train
-```
-
-Train on the combined development data:
-
-```bash
-python -m src.train_combined
-```
-
-### Run the tests
-
-The tests do not need the full PhysioNet dataset or a trained model:
-
-```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
-```
+`data/raw/set-c` before training or evaluation.
 
 ### Train the model
 
-Place the PhysioNet files under `data/raw/set-a`, `data/raw/set-b`, and
-`data/raw/set-c` first. To train the main model on Set A:
+Train on Set A:
 
 ```powershell
+python -m src.train
+```
 
-Start the API in one terminal:
+The optional combined training script is:
 
-The combined training script is optional:
-uvicorn api.main:app --port 8000
 ```powershell
-
-Start the Streamlit interface in another terminal:
+python -m src.train_combined
+```
 
 After training, the model bundle is saved as
 `models/hybrid_ensemble_core.joblib`.
@@ -243,35 +220,42 @@ After training, the model bundle is saved as
 ### Evaluate Set C
 
 ```powershell
-streamlit run app/streamlit_ui.py
+python -m src.test_set_c
 ```
 
 ### Start the API
 
-Open a terminal in the repository folder and run:
-first if `models/hybrid_ensemble_core.joblib` is not already present.
+Open one terminal in the repository folder and run:
+
 ```powershell
-## Tests
+uvicorn api.main:app --port 8000
+```
 
-The repository includes a small test suite that runs without the full PhysioNet dataset
-The API is then available at `http://127.0.0.1:8000`. The interactive API
-documentation is at `http://127.0.0.1:8000/docs`.
+The API is available at `http://127.0.0.1:8000`. Interactive documentation is at
+`http://127.0.0.1:8000/docs`.
 
-In a second terminal, activate the same environment and start the dashboard:
+### Start the dashboard
+
+In a second terminal, activate the same environment and run:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m unittest discover -s tests -p "test_*.py" -v
+streamlit run app/streamlit_ui.py
 ```
 
-The Streamlit page uses the API running on port `8000`. Keep both terminals open
-while using the dashboard.
+The dashboard uses the API running on port `8000`, so keep both terminals open.
 
-These tests cover repository-local paths, parsing of missing values, and the 48-hour
-feature cutoff. The full training and API paths still require the dataset and installed
-runtime dependencies described above.
-The full training and API paths require the dataset and installed runtime dependencies
-described above.
+## API examples
+
+### Predict one patient
+
+`POST /predict`
+
+```json
+{
+  "Age": 72,
+  "Gender": 1,
+  "Observations": [
     {"Parameter": "HR", "Value": 118},
     {"Parameter": "GCS", "Value": 8},
     {"Parameter": "SysABP", "Value": 82},
