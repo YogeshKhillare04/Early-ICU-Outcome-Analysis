@@ -1,30 +1,30 @@
-# Early ICU Outcome Analysis
+# Early ICU Mortality Prediction
 
-This project uses the first 48 hours of ICU measurements to estimate whether a patient
-will die during the hospital stay. It was built as a learning and portfolio project
-using the PhysioNet Computing in Cardiology Challenge 2012 dataset.
+This project uses the first 48 hours of ICU measurements to estimate the chance of
+in-hospital mortality. I built it as a learning project using the PhysioNet/CinC
+Challenge 2012 dataset.
 
 It is not a clinical tool and should not be used to make treatment decisions.
 
-## Why this project
+## Why I built it
 
-The main question is:
+The question I wanted to explore was:
 
 > Can early vital signs and laboratory measurements provide a useful estimate of
 > in-hospital mortality risk?
 
-The project covers the full workflow:
+The repository covers the full workflow:
 
 - reading the original PhysioNet text files
 - cleaning and aggregating measurements from the first 48 hours
 - handling missing clinical values
 - training tabular and sequence models
 - evaluating the models on held-out data
-- displaying risk estimates and important features in a small web application
+- serving risk estimates and important features through a small web application
 
 ### Project flow
 
-This is the main path through the project:
+The main path looks like this:
 
 ```mermaid
 flowchart LR
@@ -72,16 +72,17 @@ data/raw/
 
 The data is not included in this repository.
 
-The training scripts use Sets A and B for development. Set C is evaluated separately
-by `src/test_set_c.py`.
+The main training script uses labeled Set A. Set B can be processed for unlabeled
+risk scoring by `src/test_set_b.py`, while Set C is evaluated separately by
+`src/test_set_c.py`.
 
-## What the pipeline does
+## How it works
 
 ### 1. Prepare the data
 
-`src/data_pipeline.py` reads the raw text files and creates a long-format table of
-patient observations. Processed data can be cached as Parquet files so that later runs
-do not need to parse every raw file again.
+`src/data_pipeline.py` reads the raw text files and turns them into a long-format table
+of patient observations. The compiled data is cached as Parquet, so later runs can
+skip the raw-file parsing step when the source files have not changed.
 
 ### 2. Create features
 
@@ -113,16 +114,16 @@ flowchart TD
   E --> J[Sequence tensor]
 ```
 
-### 3. Train models
+### 3. Train the models
 
 The main training path combines two model types:
 
 - LightGBM for the patient-level tabular features
 - a PyTorch bidirectional LSTM for the hourly sequence features
 
-The two model outputs are combined using a logistic-regression stacker. This is more
-complex than is normally needed for a first data-science project, but it gives a useful
-comparison between tabular and time-series approaches.
+The two model outputs are combined with a logistic-regression stacker. This lets the
+project use the strengths of both a tabular model and a time-series model instead of
+choosing only one of them.
 
 ### 4. Evaluate the predictions
 
@@ -130,7 +131,7 @@ The outcome is imbalanced: roughly 14% of the records are positive cases. For th
 reason, the project reports AUPRC in addition to AUROC. It also records precision,
 recall, the PhysioNet event score, and Brier loss where applicable.
 
-The current README reports the following results from the existing training runs:
+The existing training run reported the following results:
 
 | Metric | Development cross-validation | Held-out evaluation |
 |---|---:|---:|
@@ -139,9 +140,9 @@ The current README reports the following results from the existing training runs
 | PhysioNet Event 1 | about 0.53 | about 0.57 |
 | Brier loss | not reported | about 0.085 |
 
-These numbers should be treated as project results, not as evidence that the model is
-ready for clinical use. Re-running the LSTM may produce slightly different values
-because CPU-based neural-network training is not fully deterministic.
+These are results from this project, not evidence that the model is ready for clinical
+use. Re-running the LSTM can produce slightly different values because CPU-based
+neural-network training is not completely deterministic.
 
 ## Repository layout
 
@@ -182,8 +183,8 @@ icu-mortality-prediction/
 - FastAPI and Uvicorn for the prediction API
 - Streamlit and Plotly for the interface
 
-LangChain is not used. This project works with structured clinical measurements and
-does not require a language model.
+This project does not use LangChain or a language model. The inputs are structured
+clinical measurements.
 
 ## Setup
 
@@ -235,8 +236,8 @@ Start the Streamlit interface in another terminal:
 streamlit run app/streamlit_ui.py
 ```
 
-The API expects a trained model artifact in the configured model directory. Training
-must be completed before `/predict` or `/rank` can be used.
+The API expects the trained artifact in the configured model directory. Run training
+first if `models/hybrid_ensemble_core.joblib` is not already present.
 
 ## Tests
 

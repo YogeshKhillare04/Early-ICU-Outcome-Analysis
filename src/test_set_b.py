@@ -16,12 +16,12 @@ from src.utils import setup_logger, load_artifact
 from src.features import extract_advanced_clinical_features
 from src.evaluate import calculate_clinical_metrics, apply_stacking_ensemble
 from src.model_dl import ClinicalLSTM
-from src.data_pipeline import compile_raw_database, attach_outcomes
+from src.data_pipeline import attach_outcomes, compile_raw_database
 
 logger = setup_logger("set_b_test_orchestrator")
 
 def process_and_evaluate_set_b():
-    """Ingests Set B records, generates clean binary caches, and outputs a prospective metric scorecard."""
+    """Evaluates the frozen model on the official labeled Set B cohort."""
     logger.info("==============================================================")
     logger.info("       ICU FRAMEWORK: SET B PROSPECTIVE EVALUATION LOOP        ")
     logger.info("==============================================================")
@@ -50,10 +50,9 @@ def process_and_evaluate_set_b():
         tabular_features = feature_package["tabular"]
         sequences_tensor = feature_package["sequences"]
 
-        # --- STEP 4: ALIGN PROFILES WITH TRUTH OUTCOME LABEL REGISTRIES ---
+        # --- STEP 4: Align Set B features with official outcome labels ---
         pre_merge_record_ids = tabular_features['RecordId'].values
         record_id_to_seq_row = {rid: i for i, rid in enumerate(pre_merge_record_ids)}
-
         master_dataset = attach_outcomes(tabular_features, dataset_type="set-b")
         y_true = master_dataset['In-hospital_death'].values
 
@@ -66,7 +65,7 @@ def process_and_evaluate_set_b():
         seq_b_raw = sequences_tensor[[record_id_to_seq_row[rid] for rid in master_dataset['RecordId'].values]]
         seq_b = (seq_b_raw - seq_mean) / seq_std
 
-        logger.info(f"Set B matched cohort finalized. Total sample size: {len(y_true)} patients.")
+        logger.info(f"Set B labeled cohort finalized. Total sample size: {len(y_true)} patients.")
 
         # --- STEP 5: RUN BLENDED HYBRID BATCH INFERENCE ---
         logger.info("🔮 Running inference across ensembled LightGBM decision trees...")
@@ -88,24 +87,13 @@ def process_and_evaluate_set_b():
         final_ensemble_probs = apply_stacking_ensemble(stacker, stacker_input_order, test_probs)
         final_ensemble_probs = np.clip(final_ensemble_probs, 0.0, 1.0)
         
-        # --- STEP 6: COMPILE OFFICIAL holdout METRIC SCORE CARD ---
+        # --- STEP 6: Calculate metrics and export the evaluation audit ---
         scores = calculate_clinical_metrics(y_true, final_ensemble_probs)
-        
-        logger.info("==================================================")
-        logger.info("         OFFICIAL SET B PROSPECTIVE SCORE CARD     ")
-        logger.info("==================================================")
-        logger.info(f" Set B Area Under PR Curve (AUPRC):  {scores['AUPRC']:.4f}")
-        logger.info(f" Set B Area Under ROC Curve (AUROC): {scores['AUROC']:.4f}")
-        logger.info(f" Set B Balanced Event1 Metric Score: {scores['PhysioNet_Event1']:.4f}")
-        logger.info(f" Set B Expected Brier Loss Matrix:   {scores['Brier_Loss']:.4f}")
-        logger.info("==================================================")
-        
-        # --- STEP 7: EXPORT CLEAN PROCESSED DATASET LOGS FOR FUTURE TRAINING ---
-        # Save a clean, wide dataset containing targets for our planned unified train loop
+        logger.info(f"Set B AUROC: {scores['AUROC']:.4f}; AUPRC: {scores['AUPRC']:.4f}")
+
         master_dataset.to_csv(config.PROCESSED_DATA_DIR / "set_b_processed_features.csv", index=False)
         np.save(config.PROCESSED_DATA_DIR / "set_b_sequences.npy", seq_b)
         
-        # Save output prediction audit log
         output_df = pd.DataFrame({
             "RecordId": master_dataset["RecordId"],
             "True_Label": y_true,

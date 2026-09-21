@@ -28,7 +28,7 @@ def process_raw_patient_file(file_path: Path) -> pd.DataFrame:
                 param_name = parts[1].strip()
                 raw_val = parts[2].strip()
                 
-                # FIXED: Comprehensive string token matcher preventing runtime float casting failures
+                # Treat the common missing-value markers as NaN.
                 if raw_val in ('-1', '', 'NaN', 'nan', 'None'):
                     val_score = np.nan
                 else:
@@ -55,17 +55,20 @@ def compile_raw_database(dataset_type: str = "set-a") -> pd.DataFrame:
     compressed database dataframe backed by Parquet local cache storage.
     """
     cache_path = config.PROCESSED_DATA_DIR / f"raw_database_cache_{dataset_type.replace('-', '_')}.parquet"
+    target_dir = config.RAW_DATA_DIR / dataset_type
     
-    if cache_path.exists():
-        logger.info(f"💾 Discovered compiled binary cache snapshot for {dataset_type} at {cache_path}. Loading...")
+    raw_files = list(target_dir.glob("*.txt")) if target_dir.exists() else []
+    newest_raw_mtime = max((file_path.stat().st_mtime for file_path in raw_files), default=0)
+
+    if cache_path.exists() and cache_path.stat().st_mtime >= newest_raw_mtime:
+        logger.info(f"Loading cached raw data for {dataset_type} from {cache_path}...")
         return pd.read_parquet(cache_path)
         
-    target_dir = config.RAW_DATA_DIR / dataset_type
     if not target_dir.exists():
         logger.error(f"Target data directory context path not found: {target_dir}")
         raise FileNotFoundError(f"Directory {target_dir} is completely missing.")
         
-    all_files = list(target_dir.glob("*.txt"))
+    all_files = raw_files
     logger.info(f"🔍 No cache found. Aggregating {len(all_files)} text logs for {dataset_type}...")
     
     compiled_dfs = []
@@ -84,7 +87,7 @@ def compile_raw_database(dataset_type: str = "set-a") -> pd.DataFrame:
         
     master_long_df = pd.concat(compiled_dfs, ignore_index=True)
     master_long_df.to_parquet(cache_path, compression="snappy")
-    logger.info(f"✨ Successfully frozen compressed database snapshot cache at: {cache_path}")
+    logger.info(f"Saved the raw data cache to {cache_path}")
     return master_long_df
 
 
@@ -103,7 +106,24 @@ def attach_outcomes(features_df: pd.DataFrame, dataset_type: str = "set-a") -> p
     labels_df.columns = [col.replace('ID', 'Id') for col in labels_df.columns]
     
     target_columns = ["RecordId", "In-hospital_death"]
+    missing_columns = [column for column in target_columns if column not in labels_df.columns]
+    if missing_columns:
+        raise ValueError(
+            f"Outcome registry {outcome_filename} is missing required columns: {missing_columns}"
+        )
+
     labels_subset = labels_df[target_columns].copy()
+    if labels_subset["RecordId"].duplicated().any():
+        raise ValueError(f"Outcome registry {outcome_filename} contains duplicate RecordId values.")
+
+    feature_ids = set(features_df["RecordId"].dropna().astype(int))
+    outcome_ids = set(labels_subset["RecordId"].dropna().astype(int))
+    missing_ids = feature_ids - outcome_ids
+    if missing_ids:
+        raise ValueError(
+            f"Outcome registry {outcome_filename} does not cover {len(missing_ids)} patient records. "
+            "Verify that the official outcome file matches the raw cohort."
+        )
     
     merged_dataset = pd.merge(features_df, labels_subset, on="RecordId", how="inner")
     logger.info(f"Label alignment complete for {dataset_type}. Matched records cohort count: {merged_dataset.shape[0]}")

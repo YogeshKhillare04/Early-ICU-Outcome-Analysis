@@ -26,6 +26,8 @@ logs/
 
 # Local environments and Python caches.
 venv/
+.venv/
+.venv-clean/
 .conda/
 .env
 __pycache__/
