@@ -52,18 +52,22 @@ def _standardize_time_columns(ts_data: pd.DataFrame) -> pd.DataFrame:
 
     if 'minutes' not in ts_data.columns:
         def standardized_time_to_minutes(val):
-            if pd.isna(val): return 0
+            # Unparseable times become NaN (and are dropped by the window filter) instead of
+            # being silently treated as minute 0, which would pull them into the "first 6h" window.
+            if pd.isna(val): return np.nan
             if isinstance(val, (int, float)): return int(val)
             val_str = str(val).strip()
-            if ':' in val_str:
-                try:
+            try:
+                if ':' in val_str:
                     parts = val_str.split(':')
                     return int(parts[0]) * 60 + int(parts[1])
-                except Exception: return 0
-            else:
-                try: return int(float(val_str))
-                except Exception: return 0
+                return int(float(val_str))
+            except Exception:
+                return np.nan
         ts_data['minutes'] = ts_data['Time'].apply(standardized_time_to_minutes)
+        n_bad = int(ts_data['minutes'].isna().sum())
+        if n_bad:
+            logger.warning(f"{n_bad} rows had unparseable timestamps and will be excluded.")
 
     return ts_data
 
@@ -85,7 +89,11 @@ def _build_trajectory_deltas(vitals_data: pd.DataFrame, active_params: list) -> 
 
     max_times = vitals_data.groupby('RecordId')['minutes'].max().rename('max_time')
     vitals_with_max = vitals_data.join(max_times, on='RecordId')
-    last_6h = vitals_with_max[vitals_with_max['minutes'] >= (vitals_with_max['max_time'] - 360)]
+    # The late window must not overlap the early one: for stays that end within 6h there is no
+    # trajectory, so the delta stays NaN rather than being computed from the same readings twice.
+    last_6h = vitals_with_max[
+        (vitals_with_max['minutes'] >= (vitals_with_max['max_time'] - 360)) & (vitals_with_max['minutes'] > 360)
+    ]
 
     start_means = first_6h.groupby(['RecordId', 'Parameter'])['Value'].mean().unstack()
     end_means = last_6h.groupby(['RecordId', 'Parameter'])['Value'].mean().unstack()
@@ -127,34 +135,36 @@ def _build_sequence_cube(vitals_data: pd.DataFrame, patient_index: pd.Index) -> 
 
 
 def construct_physiological_ratios(df: pd.DataFrame) -> pd.DataFrame:
-    """Builds non-linear medical risk ratios from the raw aggregated mean columns."""
-    epsilon = 1e-9
+    """Builds derived clinical ratios from aggregated mean columns.
+
+    A ratio is only computed when every input was actually measured; otherwise it is NaN.
+    (Previously missing inputs were replaced with "healthy" defaults, which invented clinical
+    signals -- e.g. FiO2 0.6 with no PaO2 gave a P/F ratio of 167, i.e. apparent severe ARDS.)
+    LightGBM handles NaN natively, and the *_missing flags still tell the model what was absent.
+    """
     logger.info("Calculating advanced clinical metric indexes...")
+    nan = pd.Series(np.nan, index=df.index)
 
-    def col(name, default):
-        return df[name] if name in df.columns else pd.Series(default, index=df.index)
+    def col(name):
+        return df[name] if name in df.columns else nan
 
-    hr = col('HR_mean', config.CLINICAL_DEFAULTS.get('HR', 80.0)).fillna(config.CLINICAL_DEFAULTS.get('HR', 80.0))
-    sys_bp = col('SysABP_mean', np.nan)
+    def safe_div(num, den):
+        return num / den.where(den > 0)
+
+    hr = col('HR_mean')
+    sys_bp = col('SysABP_mean')
     if 'NISysABP_mean' in df.columns:
         sys_bp = sys_bp.fillna(df['NISysABP_mean'])
-    sys_bp = sys_bp.fillna(120.0)
-
-    pa_o2 = col('PaO2_mean', config.CLINICAL_DEFAULTS.get('PaO2', 100.0)).fillna(config.CLINICAL_DEFAULTS.get('PaO2', 100.0))
-    fi_o2 = col('FiO2_mean', config.CLINICAL_DEFAULTS.get('FiO2', 0.21)).fillna(config.CLINICAL_DEFAULTS.get('FiO2', 0.21))
-    bun = col('BUN_mean', 20.0).fillna(20.0)
-    creat = col('Creatinine_mean', 1.0).fillna(1.0)
-    gcs = col('GCS_mean', config.CLINICAL_DEFAULTS.get('GCS', 15.0)).fillna(config.CLINICAL_DEFAULTS.get('GCS', 15.0))
-    gcs_delta = col('GCS_delta', 0.0).fillna(0.0)
+    gcs, gcs_delta = col('GCS_mean'), col('GCS_delta')
 
     delta_cols = [f"{p}_delta" for p in TRAJECTORY_VITALS if f"{p}_delta" in df.columns]
-    total_instability = df[delta_cols].abs().fillna(0.0).sum(axis=1) if delta_cols else pd.Series(0.0, index=df.index)
+    total_instability = df[delta_cols].abs().sum(axis=1, min_count=1) if delta_cols else nan
 
     ratio_cols = pd.DataFrame({
-        'Shock_Index': hr / (sys_bp + epsilon),
+        'Shock_Index': safe_div(hr, sys_bp),
         'RPP': hr * sys_bp,
-        'PF_Ratio': pa_o2 / (fi_o2 + epsilon),
-        'BUN_Creat_Ratio': bun / (creat + epsilon),
+        'PF_Ratio': safe_div(col('PaO2_mean'), col('FiO2_mean')),
+        'BUN_Creat_Ratio': safe_div(col('BUN_mean'), col('Creatinine_mean')),
         'GCS_Trend_Severity': gcs * gcs_delta,
         'Total_Instability_Score': total_instability,
     }, index=df.index)
@@ -173,18 +183,23 @@ def extract_advanced_clinical_features(raw_long_df: pd.DataFrame, return_sequenc
     if ts_data.empty:
         raise ValueError("No observations remain inside the configured observation window.")
 
-    static_params = ['Age', 'Gender', 'Height', 'ICUType']
-    static_data = ts_data[ts_data['Parameter'].isin(static_params)].copy()
+    # Identifier rows (e.g. the "RecordID" descriptor present in every PhysioNet file) are not measurements.
+    ts_data = ts_data[~ts_data['Parameter'].isin(config.NON_FEATURE_PARAMS)].copy()
+
+    static_params = config.STATIC_PARAMS
+    static_raw = ts_data[ts_data['Parameter'].isin(static_params)].copy()
     vitals_data_raw = ts_data[~ts_data['Parameter'].isin(static_params)].copy()
 
-    logger.info("Applying clinical safety-bound outlier clipping...")
+    logger.info("Applying clinical safety-bound outlier clipping (time series AND static descriptors)...")
+    static_data = _apply_safety_bounds(static_raw)
     vitals_data = _apply_safety_bounds(vitals_data_raw)
 
     active_params = sorted(vitals_data['Parameter'].unique().tolist())
+    all_ids = pd.Index(ts_data['RecordId'].unique(), name='RecordId')
 
     logger.info("Aggregating baseline chronological matrices...")
-    # Sort by time so 'first'/'last' below are chronologically correct, not just row order
-    vitals_data_sorted = vitals_data.sort_values(['RecordId', 'minutes'])
+    # Stable sort so 'first'/'last' are chronologically correct and reproducible on ties
+    vitals_data_sorted = vitals_data.sort_values(['RecordId', 'minutes'], kind='mergesort')
     vitals_summary = vitals_data_sorted.groupby(['RecordId', 'Parameter'])['Value'].agg(
         ['mean', 'max', 'min', 'std', 'count', 'first', 'last']
     ).unstack()
@@ -194,31 +209,39 @@ def extract_advanced_clinical_features(raw_long_df: pd.DataFrame, return_sequenc
     delta_df = _build_trajectory_deltas(vitals_data, active_params)
 
     logger.info("Assembling structured missingness indicator matrix layers...")
+    # Reindex to ALL patients: a patient with no valid reading of a parameter (or no valid vitals at all)
+    # must get count 0 / missing 1, not NaN.
     recorded_counts = vitals_data.groupby(['RecordId', 'Parameter']).size().unstack(fill_value=0)
-    recorded_counts = recorded_counts.reindex(columns=active_params, fill_value=0)
+    recorded_counts = recorded_counts.reindex(index=all_ids, columns=active_params, fill_value=0)
     missing_df = (recorded_counts == 0).astype(int)
     missing_df.columns = [f"{col}_missing" for col in missing_df.columns]
 
+    # Always expose every static column (all-NaN if every value was invalid) so the feature
+    # layout does not change with the data.
     static_pivot = static_data.groupby(['RecordId', 'Parameter'])['Value'].mean().unstack()
+    static_pivot = static_pivot.reindex(columns=config.STATIC_PARAMS)
 
-    all_ids = ts_data['RecordId'].unique()
-    tabular_matrix = pd.DataFrame(index=pd.Index(all_ids, name='RecordId'))
+    tabular_matrix = pd.DataFrame(index=all_ids)
     tabular_matrix = tabular_matrix.join(static_pivot).join(vitals_summary).join(delta_df).join(missing_df)
 
-    if 'Age' not in tabular_matrix.columns: tabular_matrix['Age'] = np.nan
-    if 'Gender' not in tabular_matrix.columns: tabular_matrix['Gender'] = np.nan
-    tabular_matrix['Age'] = tabular_matrix['Age'].fillna(65.0)
-    tabular_matrix['Gender'] = tabular_matrix['Gender'].fillna(0.0)
+    # No hidden imputation of demographics: an unknown Age/Gender stays NaN (LightGBM handles it).
+    for demo in ('Age', 'Gender'):
+        if demo not in tabular_matrix.columns:
+            tabular_matrix[demo] = np.nan
 
     std_cols = [c for c in tabular_matrix.columns if c.endswith('_std')]
     tabular_matrix[std_cols] = tabular_matrix[std_cols].fillna(0.0)
     count_cols = [c for c in tabular_matrix.columns if c.endswith('_count')]
     tabular_matrix[count_cols] = tabular_matrix[count_cols].fillna(0.0)
-    delta_cols_all = [c for c in tabular_matrix.columns if c.endswith('_delta')]
-    tabular_matrix[delta_cols_all] = tabular_matrix[delta_cols_all].fillna(0.0)
+    # NOTE: *_delta stays NaN when a trajectory cannot be computed (no early or no late window).
+    # Filling with 0 would make "unknown" indistinguishable from "no change".
 
     tabular_matrix = construct_physiological_ratios(tabular_matrix)
-    tabular_matrix = tabular_matrix.drop(columns=config.HIGH_MISSING_DROP_COLS, errors='ignore')
+
+    # Drop every derived column of the configured high-missingness parameters.
+    drop_prefixes = tuple(f"{p}_" for p in config.HIGH_MISSING_DROP_PARAMS)
+    drop_cols = [c for c in tabular_matrix.columns if c.startswith(drop_prefixes)]
+    tabular_matrix = tabular_matrix.drop(columns=drop_cols)
 
     sequences_cube = None
     if return_sequences:
