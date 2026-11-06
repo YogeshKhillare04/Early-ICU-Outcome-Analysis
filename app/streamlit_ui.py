@@ -40,25 +40,68 @@ if not st.session_state.get('assets_verified', False):
     st.error("The prediction API is not running. Start it with `uvicorn api.main:app --port 8000`.")
     st.stop()
 
+# Initialize session state for patient presets
+if 'preset_age' not in st.session_state:
+    st.session_state['preset_age'] = 65
+    st.session_state['preset_gender'] = "Male"
+    st.session_state['preset_hr'] = 88.0
+    st.session_state['preset_gcs'] = 12.0
+    st.session_state['preset_sysbp'] = 115.0
+    st.session_state['preset_temp'] = 37.2
+    st.session_state['preset_bun_active'] = False
+    st.session_state['preset_bun'] = 20.0
+    st.session_state['preset_creat_active'] = False
+    st.session_state['preset_creat'] = 1.0
+
+with st.sidebar.expander("Quick Clinical Presets", expanded=True):
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        if st.button("Stable Patient", use_container_width=True):
+            st.session_state['preset_age'] = 55
+            st.session_state['preset_gender'] = "Male"
+            st.session_state['preset_hr'] = 72.0
+            st.session_state['preset_gcs'] = 15.0
+            st.session_state['preset_sysbp'] = 120.0
+            st.session_state['preset_temp'] = 37.0
+            st.session_state['preset_bun_active'] = True
+            st.session_state['preset_bun'] = 16.0
+            st.session_state['preset_creat_active'] = True
+            st.session_state['preset_creat'] = 0.9
+            st.rerun()
+    with col_p2:
+        if st.button("Septic Shock", use_container_width=True):
+            st.session_state['preset_age'] = 75
+            st.session_state['preset_gender'] = "Male"
+            st.session_state['preset_hr'] = 140.0
+            st.session_state['preset_gcs'] = 6.0
+            st.session_state['preset_sysbp'] = 75.0
+            st.session_state['preset_temp'] = 39.5
+            st.session_state['preset_bun_active'] = True
+            st.session_state['preset_bun'] = 85.0
+            st.session_state['preset_creat_active'] = True
+            st.session_state['preset_creat'] = 4.0
+            st.rerun()
+
 with st.sidebar.expander("Patient details", expanded=True):
-    age_input = st.slider("Age (Years)", min_value=15, max_value=110, value=65)
-    gender_label = st.radio("Sex", options=["Female", "Male"])
+    age_input = st.slider("Age (Years)", min_value=15, max_value=110, value=st.session_state['preset_age'])
+    gender_idx = 1 if st.session_state['preset_gender'] == "Male" else 0
+    gender_label = st.radio("Sex", options=["Female", "Male"], index=gender_idx)
     gender_encoded = 1 if gender_label == "Male" else 0
 
 with st.sidebar.expander("Vital signs", expanded=True):
     st.caption("Values used for this prediction")
-    hr_input = st.number_input("Heart Rate (bpm)", min_value=30.0, max_value=220.0, value=88.0)
-    gcs_input = st.number_input("Glasgow Coma Scale (GCS)", min_value=3.0, max_value=15.0, value=12.0)
-    sysbp_input = st.number_input("Systolic Blood Pressure (mmHg)", min_value=40.0, max_value=250.0, value=115.0)
-    temp_input = st.number_input("Temperature (°C)", min_value=30.0, max_value=45.0, value=37.2)
+    hr_input = st.number_input("Heart Rate (bpm)", min_value=30.0, max_value=220.0, value=float(st.session_state['preset_hr']))
+    gcs_input = st.number_input("Glasgow Coma Scale (GCS)", min_value=3.0, max_value=15.0, value=float(st.session_state['preset_gcs']))
+    sysbp_input = st.number_input("Systolic Blood Pressure (mmHg)", min_value=40.0, max_value=250.0, value=float(st.session_state['preset_sysbp']))
+    temp_input = st.number_input("Temperature (°C)", min_value=30.0, max_value=43.0, value=float(st.session_state['preset_temp']))
 
-with st.sidebar.expander("Laboratory values (optional)", expanded=False):
+with st.sidebar.expander("Laboratory values (optional)", expanded=st.session_state.get('preset_bun_active', False)):
     st.caption("Add values when they are available")
-    bun_active = st.checkbox("Blood Urea Nitrogen (BUN)")
-    bun_val = st.number_input("BUN (mg/dL)", min_value=1.0, max_value=200.0, value=20.0, disabled=not bun_active)
+    bun_active = st.checkbox("Blood Urea Nitrogen (BUN)", value=st.session_state.get('preset_bun_active', False))
+    bun_val = st.number_input("BUN (mg/dL)", min_value=1.0, max_value=200.0, value=float(st.session_state['preset_bun']), disabled=not bun_active)
     
-    creat_active = st.checkbox("Serum Creatinine")
-    creat_val = st.number_input("Creatinine (mg/dL)", min_value=0.1, max_value=15.0, value=1.0, step=0.1, disabled=not creat_active)
+    creat_active = st.checkbox("Serum Creatinine", value=st.session_state.get('preset_creat_active', False))
+    creat_val = st.number_input("Creatinine (mg/dL)", min_value=0.1, max_value=15.0, value=float(st.session_state['preset_creat']), step=0.1, disabled=not creat_active)
     
     plat_active = st.checkbox("Platelet Count")
     plat_val = st.number_input("Platelets (*10^3/µL)", min_value=5.0, max_value=1000.0, value=250.0, disabled=not plat_active)
@@ -102,21 +145,18 @@ with left_col:
                 if response.status_code == 200:
                     result = response.json()
                     prob = result["Mortality_Risk_Probability"]
-                    stat_prob = result.get("Statistical_48h_Probability", prob)
+                    lgbm_p = result.get("LGBM_Probability", prob)
+                    lstm_p = result.get("LSTM_Probability", prob)
                     flag = result["Clinical_Status_Flag"]
-                    red_flags = result.get("Acute_Red_Flags", [])
+                    cutoff = result.get("PhysioNet_Optimal_Cutoff", 0.3112)
                     suggestions = result.get("Review_Suggestions", [])
                     drivers = result["Primary_Risk_Drivers"]
-                    
-                    if red_flags:
-                        for rf in red_flags:
-                            st.error(f"🚨 **CRITICAL VITAL ALERT:** {rf}")
 
                     st.write(" ")
                     met_col, prog_col = st.columns([1, 2])
                     with met_col:
                         st.metric(
-                            label="Clinical Triage Risk", 
+                            label="Mortality Risk Score (Ensemble)", 
                             value=f"{prob * 100:.1f} %", 
                             delta=flag, 
                             delta_color="inverse" if ("HIGH" in flag or "CRITICAL" in flag) else "normal"
@@ -125,15 +165,18 @@ with left_col:
                         st.write(" ")
                         st.write(" ")
                         st.progress(float(prob))
-                        st.caption(f"Status: **{flag}** | 48h Baseline Model: {stat_prob * 100:.1f}%")
+                        st.caption(f"Status: **{flag}** | Optimal Decision Threshold: {cutoff * 100:.1f}%")
 
-                    st.subheader("Review prompts & Clinical guidance")
-                    st.caption("Standardized clinical review prompts based on acute physiology and model signals.")
+                    m1_col, m2_col = st.columns(2)
+                    with m1_col:
+                        st.caption(f"🌲 **LightGBM (Tabular):** {lgbm_p * 100:.1f}%")
+                    with m2_col:
+                        st.caption(f"🧠 **PyTorch LSTM (Temporal):** {lstm_p * 100:.1f}%")
+
+                    st.subheader("Clinical review prompts")
+                    st.caption("Standardized review prompts based on model output and clinical parameters.")
                     for suggestion in suggestions:
-                        if "ALERT" in suggestion or "Prioritize" in suggestion:
-                            st.warning(suggestion)
-                        else:
-                            st.info(suggestion)
+                        st.info(suggestion)
                     
                     st.write("---")
                     st.subheader("Main risk factors")
