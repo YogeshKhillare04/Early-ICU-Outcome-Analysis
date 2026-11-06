@@ -69,11 +69,22 @@ CLINICAL_SAFETY_BOUNDS = {
     'Albumin': [1.0, 6.0],
     'FiO2': [0.21, 1.0],
     'Glucose': [10.0, 1000.0],
-    'SerumGlc': [10.0, 1000.0],
-    'Cholesterol': [50.0, 60.0],
+    'Cholesterol': [50.0, 600.0],
     'TroponinI': [0.01, 50.0],
-    'TroponinT': [0.01, 50.0]
+    'TroponinT': [0.01, 50.0],
+    'pH': [6.5, 8.0],
+    'NISysABP': [40.0, 280.0],
+    'NIDiasABP': [20.0, 160.0],
+    'NIMAP': [30.0, 200.0],
+    'MechVent': [0.0, 1.0],
+    'ICUType': [1.0, 4.0]
 }
+
+# Descriptor parameters recorded once at admission (00:00). Bounds above are applied to these too.
+STATIC_PARAMS = ['Age', 'Gender', 'Height', 'ICUType']
+
+# Rows that are identifiers, not measurements. They must never become model features.
+NON_FEATURE_PARAMS = ['RecordID']
 
 
 # ==============================================================================
@@ -96,22 +107,17 @@ CLINICAL_DEFAULTS = {
     'ALT': 10.0,
     'AST': 10.0,
     'PaO2': 100.0,
-    'Glucose': 90.0,
-    'SerumGlc': 90.0
+    'Glucose': 90.0
 }
 
 
 # ==============================================================================
 # 5. DATA CLEANING & DIMENSIONALITY FILTERS
 # ==============================================================================
-# High-missingness variables dropped entirely from summary matrices.
-# These parameters have >90% missing rates, offering no statistical value.
-HIGH_MISSING_DROP_COLS = [
-    'Cholesterol_min', 'Cholesterol_max', 'Cholesterol_mean', 'Cholesterol_delta',
-    'TroponinI_min', 'TroponinI_max', 'TroponinI_mean', 'TroponinI_delta',
-    'TroponinT_min', 'TroponinT_max', 'TroponinT_mean', 'TroponinT_delta'
-]
-
+# Parameters dropped entirely (every derived column: _mean, _std, _count, _missing, ...).
+# Missing rates in Set A (from the exploratory notebook): TroponinI 94.9%, Cholesterol 92.4%,
+# TroponinT 78.4%. TroponinT is dropped because it is too sparse to learn from, not because it is >90%.
+HIGH_MISSING_DROP_PARAMS = ['Cholesterol', 'TroponinI', 'TroponinT']
 
 # ==============================================================================
 # 6. DEEP LEARNING COMPONENT VARIABLES
