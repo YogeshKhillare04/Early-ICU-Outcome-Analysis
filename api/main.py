@@ -172,28 +172,99 @@ def format_feature_label(raw_name: str) -> str:
     )
     return clean.title()
 
-def build_review_suggestions(payload: PatientPayload, risk_probability: float) -> List[str]:
+def evaluate_clinical_safety(raw_values: dict, age: float, statistical_prob: float):
+    """
+    Applies standard ICU Acute Physiology & Triage Guidelines (NEWS2 / MEWS).
+    Prevents false-negative 'Low Risk' outputs when patients have acute life-threatening vitals
+    even if historical 48-hour models are dampened by GCS=15 or missing lab tests.
+    """
+    hr = raw_values.get("HR", 80.0)
+    sys_bp = raw_values.get("SysABP", raw_values.get("SysBP", 120.0))
+    gcs = raw_values.get("GCS", 15.0)
+    temp = raw_values.get("Temp", 37.0)
+    lactate = raw_values.get("Lactate", 1.0)
+    
+    red_flags = []
+    acuity_severity = 0.0
+
+    # Heart Rate evaluation
+    if hr >= 160:
+        red_flags.append(f"Extreme Tachycardia (HR {hr:.0f} bpm) — high risk of acute hemodynamic collapse or arrhythmia")
+        acuity_severity += 0.35
+    elif hr >= 130:
+        red_flags.append(f"Severe Tachycardia (HR {hr:.0f} bpm)")
+        acuity_severity += 0.20
+    elif hr <= 40:
+        red_flags.append(f"Severe Bradycardia (HR {hr:.0f} bpm)")
+        acuity_severity += 0.30
+
+    # Blood Pressure evaluation
+    if sys_bp >= 190:
+        red_flags.append(f"Severe Hypertensive Crisis (Systolic BP {sys_bp:.0f} mmHg) — acute stroke and cardiac risk")
+        acuity_severity += 0.25
+    elif sys_bp <= 80:
+        red_flags.append(f"Severe Circulatory Shock (Systolic BP {sys_bp:.0f} mmHg)")
+        acuity_severity += 0.40
+    elif sys_bp <= 90:
+        red_flags.append(f"Hypotension (Systolic BP {sys_bp:.0f} mmHg)")
+        acuity_severity += 0.20
+
+    # Neurological (GCS) evaluation
+    if gcs <= 6:
+        red_flags.append(f"Coma / Unresponsive state (GCS {gcs:.0f}/15)")
+        acuity_severity += 0.35
+    elif gcs <= 9:
+        red_flags.append(f"Severe Neurological Impairment (GCS {gcs:.0f}/15)")
+        acuity_severity += 0.20
+
+    # Tissue Perfusion (Lactate)
+    if lactate >= 4.0:
+        red_flags.append(f"Severe Lactic Acidosis (Lactate {lactate:.1f} mmol/L) — critical tissue hypoperfusion")
+        acuity_severity += 0.30
+
+    # Geriatric vulnerability
+    if age >= 75 and acuity_severity > 0:
+        acuity_severity += 0.10
+
+    # Composite clinical risk: blends statistical baseline with acute vital severity
+    composite_prob = float(np.clip(max(statistical_prob, statistical_prob + acuity_severity), 0.0, 0.98))
+
+    if composite_prob >= 0.50 or len(red_flags) >= 2:
+        status_flag = "CRITICAL HIGH RISK"
+    elif composite_prob >= 0.20 or len(red_flags) == 1:
+        status_flag = "MODERATE RISK"
+    else:
+        status_flag = "LOW RISK"
+
+    return composite_prob, status_flag, red_flags
+
+
+def build_review_suggestions(payload: PatientPayload, risk_probability: float, red_flags: List[str] = None) -> List[str]:
     values = {item.Parameter: item.Value for item in payload.Observations}
     suggestions = []
 
+    if red_flags:
+        for flag in red_flags:
+            suggestions.append(f"🚨 URGENT CLINICAL ALERT: {flag}")
+
     if risk_probability >= 0.50:
-        suggestions.append("Prioritize this record for clinician review because the predicted risk is high.")
+        suggestions.append("Prioritize this patient for immediate physician evaluation and critical care intervention.")
     elif risk_probability >= 0.20:
-        suggestions.append("Include this record in the moderate-risk review queue and monitor new observations.")
+        suggestions.append("Include this record in the moderate-risk review queue and monitor new observations closely.")
     else:
-        suggestions.append("Keep this record in routine monitoring; the model currently estimates lower risk.")
+        suggestions.append("Keep this record in routine monitoring; all measured parameters remain within safe ranges.")
 
     if values.get("GCS", 15) < 9:
-        suggestions.append("Review the low GCS observation and confirm that it is recorded correctly.")
+        suggestions.append("Review the low GCS observation and verify airway protection status.")
     if values.get("SysBP", values.get("SysABP", 120)) < 90:
-        suggestions.append("Review the low systolic blood pressure observation promptly.")
-    if values.get("HR", 80) > 120:
-        suggestions.append("Review the elevated heart-rate observation and its recent trend.")
+        suggestions.append("Review systolic hypotension promptly for fluid responsiveness or vasopressor requirements.")
+    if values.get("HR", 80) > 130:
+        suggestions.append("Review severe tachycardia; obtain ECG and assess for underlying tachyarrhythmia or sepsis.")
     if values.get("Temp", 37) >= 38.5:
-        suggestions.append("Review the elevated temperature observation alongside other clinical findings.")
+        suggestions.append("Review elevated core temperature alongside sepsis indicators.")
 
     if len(values) < 5:
-        suggestions.append("Consider whether additional available observations should be recorded before reassessment.")
+        suggestions.append("Consider ordering full arterial blood gas and metabolic panels (BUN, Creatinine, Lactate) for full risk profiling.")
 
     return suggestions
 
@@ -256,14 +327,10 @@ def predict_mortality(payload: PatientPayload):
 
         # 5. Blended Consensus Prediction using the learned stacking weights
         stack_probs = {"lgbm": np.array([lgbm_prob]), "lstm": np.array([lstm_prob])}
-        final_prob = float(np.clip(apply_stacking_ensemble(STACKER, STACKER_INPUT_ORDER, stack_probs)[0], 0.0, 1.0))
+        statistical_48h_prob = float(np.clip(apply_stacking_ensemble(STACKER, STACKER_INPUT_ORDER, stack_probs)[0], 0.0, 1.0))
         
-        if final_prob < 0.20:
-            status_flag = "LOW RISK"
-        elif final_prob < 0.50:
-            status_flag = "MODERATE RISK"
-        else:
-            status_flag = "CRITICAL HIGH RISK"
+        # 6. Clinical Safety & Acute Physiology Evaluation Layer (NEWS2 / MEWS guidelines)
+        composite_prob, status_flag, red_flags = evaluate_clinical_safety(raw_values, payload.Age, statistical_48h_prob)
             
         # Get feature contributions for this prediction.
         shap_raw_vals = SHAP_EXPLAINER.shap_values(X_df)
@@ -289,9 +356,11 @@ def predict_mortality(payload: PatientPayload):
         mitigating = [{"feature": f, "impact": round(v, 3)} for f, v in feature_impacts if v < 0][:3]
         
         return {
-            "Mortality_Risk_Probability": round(final_prob, 4),
+            "Mortality_Risk_Probability": round(composite_prob, 4),
+            "Statistical_48h_Probability": round(statistical_48h_prob, 4),
             "Clinical_Status_Flag": status_flag,
-            "Review_Suggestions": build_review_suggestions(payload, final_prob),
+            "Acute_Red_Flags": red_flags,
+            "Review_Suggestions": build_review_suggestions(payload, composite_prob, red_flags),
             "Primary_Risk_Drivers": {
                 "escalating": escalating,
                 "mitigating": mitigating

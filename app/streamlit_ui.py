@@ -102,29 +102,38 @@ with left_col:
                 if response.status_code == 200:
                     result = response.json()
                     prob = result["Mortality_Risk_Probability"]
+                    stat_prob = result.get("Statistical_48h_Probability", prob)
                     flag = result["Clinical_Status_Flag"]
+                    red_flags = result.get("Acute_Red_Flags", [])
                     suggestions = result.get("Review_Suggestions", [])
                     drivers = result["Primary_Risk_Drivers"]
                     
+                    if red_flags:
+                        for rf in red_flags:
+                            st.error(f"🚨 **CRITICAL VITAL ALERT:** {rf}")
+
                     st.write(" ")
                     met_col, prog_col = st.columns([1, 2])
                     with met_col:
                         st.metric(
-                            label="Mortality Risk Score", 
+                            label="Clinical Triage Risk", 
                             value=f"{prob * 100:.1f} %", 
                             delta=flag, 
-                            delta_color="normal" if prob < 0.35 else "inverse"
+                            delta_color="inverse" if ("HIGH" in flag or "CRITICAL" in flag) else "normal"
                         )
                     with prog_col:
                         st.write(" ")
                         st.write(" ")
                         st.progress(float(prob))
-                        st.caption(f"Risk Stratification Status: {flag}")
+                        st.caption(f"Status: **{flag}** | 48h Baseline Model: {stat_prob * 100:.1f}%")
 
-                    st.subheader("Review prompts")
-                    st.caption("Rule-based prompts for analysis and review, not medical advice.")
+                    st.subheader("Review prompts & Clinical guidance")
+                    st.caption("Standardized clinical review prompts based on acute physiology and model signals.")
                     for suggestion in suggestions:
-                        st.info(suggestion)
+                        if "ALERT" in suggestion or "Prioritize" in suggestion:
+                            st.warning(suggestion)
+                        else:
+                            st.info(suggestion)
                     
                     st.write("---")
                     st.subheader("Main risk factors")
