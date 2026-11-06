@@ -174,64 +174,117 @@ def format_feature_label(raw_name: str) -> str:
 
 def evaluate_clinical_safety(raw_values: dict, age: float, statistical_prob: float):
     """
-    Applies standard ICU Acute Physiology & Triage Guidelines (NEWS2 / MEWS).
-    Prevents false-negative 'Low Risk' outputs when patients have acute life-threatening vitals
-    even if historical 48-hour models are dampened by GCS=15 or missing lab tests.
+    Applies comprehensive ICU Acute Physiology & Triage Guidelines (NEWS2 / MEWS / SOFA).
+    Ensures physiological emergencies (e.g. fatal hyperthermia, shock, severe coma, malignant arrhythmia)
+    are accurately recognized as Critical High Risk, even if 48-hour statistical models lack laboratory context.
     """
     hr = raw_values.get("HR", 80.0)
     sys_bp = raw_values.get("SysABP", raw_values.get("SysBP", 120.0))
     gcs = raw_values.get("GCS", 15.0)
     temp = raw_values.get("Temp", 37.0)
+    resp = raw_values.get("RespRate", 16.0)
     lactate = raw_values.get("Lactate", 1.0)
-    
+    creat = raw_values.get("Creatinine", 1.0)
+    bun = raw_values.get("BUN", 20.0)
+    fio2 = raw_values.get("FiO2", 0.21)
+
     red_flags = []
-    acuity_severity = 0.0
+    acuity_boost = 0.0
 
-    # Heart Rate evaluation
+    # 1. Core Temperature (Severe hyperthermia or hypothermia)
+    if temp >= 42.0:
+        red_flags.append(f"Lethal Hyperthermia ({temp:.1f} °C) — acute risk of thermal encephalopathy, protein denaturation and multi-organ failure")
+        acuity_boost += 0.85
+    elif temp >= 40.0:
+        red_flags.append(f"Severe Hyperpyrexia ({temp:.1f} °C) — critical neuro-metabolic emergency")
+        acuity_boost += 0.50
+    elif temp >= 38.8:
+        red_flags.append(f"High Fever ({temp:.1f} °C) — systemic inflammatory response")
+        acuity_boost += 0.20
+    elif temp <= 32.0:
+        red_flags.append(f"Severe Hypothermia ({temp:.1f} °C) — profound metabolic depression")
+        acuity_boost += 0.70
+    elif temp <= 35.0:
+        red_flags.append(f"Hypothermia ({temp:.1f} °C) — hallmark of decompensated shock / sepsis")
+        acuity_boost += 0.35
+
+    # 2. Heart Rate
     if hr >= 160:
-        red_flags.append(f"Extreme Tachycardia (HR {hr:.0f} bpm) — high risk of acute hemodynamic collapse or arrhythmia")
-        acuity_severity += 0.35
+        red_flags.append(f"Extreme Tachycardia ({hr:.0f} bpm) — high risk of malignant arrhythmia / acute hemodynamic collapse")
+        acuity_boost += 0.45
     elif hr >= 130:
-        red_flags.append(f"Severe Tachycardia (HR {hr:.0f} bpm)")
-        acuity_severity += 0.20
+        red_flags.append(f"Severe Tachycardia ({hr:.0f} bpm)")
+        acuity_boost += 0.25
     elif hr <= 40:
-        red_flags.append(f"Severe Bradycardia (HR {hr:.0f} bpm)")
-        acuity_severity += 0.30
+        red_flags.append(f"Severe Bradycardia ({hr:.0f} bpm) — impending asystole / heart block risk")
+        acuity_boost += 0.40
 
-    # Blood Pressure evaluation
-    if sys_bp >= 190:
-        red_flags.append(f"Severe Hypertensive Crisis (Systolic BP {sys_bp:.0f} mmHg) — acute stroke and cardiac risk")
-        acuity_severity += 0.25
-    elif sys_bp <= 80:
-        red_flags.append(f"Severe Circulatory Shock (Systolic BP {sys_bp:.0f} mmHg)")
-        acuity_severity += 0.40
-    elif sys_bp <= 90:
-        red_flags.append(f"Hypotension (Systolic BP {sys_bp:.0f} mmHg)")
-        acuity_severity += 0.20
+    # 3. Systolic Blood Pressure
+    if sys_bp >= 200:
+        red_flags.append(f"Malignant Hypertensive Crisis ({sys_bp:.0f} mmHg) — acute intracranial hemorrhage / cardiac event risk")
+        acuity_boost += 0.40
+    elif sys_bp >= 180:
+        red_flags.append(f"Severe Hypertensive Emergency ({sys_bp:.0f} mmHg)")
+        acuity_boost += 0.25
+    elif sys_bp <= 70:
+        red_flags.append(f"Profound Circulatory Shock ({sys_bp:.0f} mmHg) — inadequate vital organ perfusion")
+        acuity_boost += 0.65
+    elif sys_bp <= 85:
+        red_flags.append(f"Severe Hypotension ({sys_bp:.0f} mmHg)")
+        acuity_boost += 0.40
+    elif sys_bp <= 95:
+        red_flags.append(f"Hypotension ({sys_bp:.0f} mmHg)")
+        acuity_boost += 0.20
 
-    # Neurological (GCS) evaluation
-    if gcs <= 6:
-        red_flags.append(f"Coma / Unresponsive state (GCS {gcs:.0f}/15)")
-        acuity_severity += 0.35
-    elif gcs <= 9:
-        red_flags.append(f"Severe Neurological Impairment (GCS {gcs:.0f}/15)")
-        acuity_severity += 0.20
+    # 4. Neurological (GCS)
+    if gcs <= 4:
+        red_flags.append(f"Deep Coma (GCS {gcs:.0f}/15) — severe cerebral injury / loss of protective airway reflexes")
+        acuity_boost += 0.55
+    elif gcs <= 8:
+        red_flags.append(f"Severe Neurological Impairment / Stupor (GCS {gcs:.0f}/15)")
+        acuity_boost += 0.35
+    elif gcs <= 11:
+        red_flags.append(f"Altered Mental Status (GCS {gcs:.0f}/15)")
+        acuity_boost += 0.15
 
-    # Tissue Perfusion (Lactate)
-    if lactate >= 4.0:
-        red_flags.append(f"Severe Lactic Acidosis (Lactate {lactate:.1f} mmol/L) — critical tissue hypoperfusion")
-        acuity_severity += 0.30
+    # 5. Respiration Rate
+    if resp >= 40:
+        red_flags.append(f"Severe Tachypnea ({resp:.0f} bpm) — impending respiratory exhaustion")
+        acuity_boost += 0.40
+    elif resp <= 6:
+        red_flags.append(f"Severe Bradypnea ({resp:.0f} bpm) — acute respiratory arrest warning")
+        acuity_boost += 0.50
 
-    # Geriatric vulnerability
-    if age >= 75 and acuity_severity > 0:
-        acuity_severity += 0.10
+    # 6. Critical Metabolic / Organ Failure Labs
+    if lactate >= 5.0:
+        red_flags.append(f"Critical Lactic Acidosis ({lactate:.1f} mmol/L) — severe cellular hypoxia")
+        acuity_boost += 0.50
+    elif lactate >= 3.0:
+        red_flags.append(f"Elevated Lactate ({lactate:.1f} mmol/L)")
+        acuity_boost += 0.25
 
-    # Composite clinical risk: blends statistical baseline with acute vital severity
-    composite_prob = float(np.clip(max(statistical_prob, statistical_prob + acuity_severity), 0.0, 0.98))
+    if creat >= 4.0:
+        red_flags.append(f"Severe Acute Kidney Injury (Creatinine {creat:.1f} mg/dL)")
+        acuity_boost += 0.35
 
-    if composite_prob >= 0.50 or len(red_flags) >= 2:
+    if bun >= 80:
+        red_flags.append(f"Severe Uremia (BUN {bun:.0f} mg/dL)")
+        acuity_boost += 0.30
+
+    if fio2 >= 0.70:
+        red_flags.append(f"High Oxygen Dependency (FiO2 {fio2*100:.0f}%) — acute hypoxemic lung injury")
+        acuity_boost += 0.30
+
+    # Geriatric vulnerability multiplier
+    if age >= 75 and acuity_boost > 0:
+        acuity_boost += 0.10
+
+    # Composite clinical risk: blends statistical ML prediction with acute vital derangements
+    composite_prob = float(np.clip(statistical_prob + acuity_boost, 0.0, 0.99))
+
+    if composite_prob >= 0.50 or any(kw in " ".join(red_flags) for kw in ["Lethal", "Profound", "Deep Coma", "Critical"]):
         status_flag = "CRITICAL HIGH RISK"
-    elif composite_prob >= 0.20 or len(red_flags) == 1:
+    elif composite_prob >= 0.20 or len(red_flags) >= 1:
         status_flag = "MODERATE RISK"
     else:
         status_flag = "LOW RISK"
