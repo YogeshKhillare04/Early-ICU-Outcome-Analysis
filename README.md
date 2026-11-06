@@ -53,7 +53,6 @@ The repository expects the data to be arranged like this:
 data/raw/
 |-- set-a/
 |-- set-b/
-  |-- early_icu_outcome_analysis.ipynb # Exploratory notebook
 `-- set-c/
 ```
 
@@ -195,6 +194,18 @@ cd icu-mortality-prediction
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+```
+
+Run the unit tests to verify the installation:
+
+```powershell
+python -m pytest tests/ -v
+```
+
+or, if pytest is not installed:
+
+```powershell
+python -m unittest discover -s tests -v
 ```
 
 Place the PhysioNet files under `data/raw/set-a`, `data/raw/set-b`, and

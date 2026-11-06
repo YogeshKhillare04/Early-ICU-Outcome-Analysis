@@ -13,7 +13,8 @@ data/processed/*.csv
 data/processed/*.npy
 
 # Trained model artifacts.
-models/
+models/*
+!models/.gitkeep
 *.joblib
 *.pkl
 *.npy

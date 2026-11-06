@@ -87,7 +87,7 @@ def evaluate_standalone_set_c():
         with torch.no_grad():
             seq_tensor = torch.FloatTensor(seq_c).to(device)
             lstm_logits = lstm_engine(seq_tensor).cpu().numpy()
-            lstm_probs = np.nan_to_num(1 / (1 + np.exp(-lstm_logits)), nan=0.142)
+            lstm_probs = np.nan_to_num(1 / (1 + np.exp(-lstm_logits)), nan=0.0, posinf=1.0, neginf=0.0)
 
         # Stacked ensemble predictions using the learned LGBM/LSTM blend weights
         probs = {"lgbm": lgbm_probs, "lstm": lstm_probs}

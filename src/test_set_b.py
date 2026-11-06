@@ -81,7 +81,7 @@ def process_and_evaluate_set_b():
             test_seq_tensor = torch.FloatTensor(seq_b).to(device)
             test_lstm_logits = lstm_skeleton(test_seq_tensor).cpu().numpy()
             test_lstm_probs = 1 / (1 + np.exp(-test_lstm_logits))
-            test_lstm_probs = np.nan_to_num(test_lstm_probs, nan=0.142, posinf=1.0, neginf=0.0)
+            test_lstm_probs = np.nan_to_num(test_lstm_probs, nan=0.0, posinf=1.0, neginf=0.0)
 
         test_probs = {"lgbm": test_lgbm_probs, "lstm": test_lstm_probs}
         final_ensemble_probs = apply_stacking_ensemble(stacker, stacker_input_order, test_probs)

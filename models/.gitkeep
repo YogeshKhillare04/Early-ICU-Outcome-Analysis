@@ -1,0 +1,4 @@
+# This file keeps the models/ directory tracked by git.
+# Trained model files (.joblib) are excluded via .gitignore.
+# After training, the model is saved here as: models/hybrid_ensemble_core.joblib
+

@@ -23,7 +23,7 @@ st.set_page_config(
 if 'assets_verified' not in st.session_state:
     with st.spinner("Connecting to the prediction API..."):
         try:
-            check = requests.get("http://127.0.0.1:8000/docs", timeout=2.0)
+            check = requests.get("http://127.0.0.1:8000/health", timeout=2.0)
             st.session_state['assets_verified'] = True
         except Exception as e:
             st.session_state['assets_verified'] = False

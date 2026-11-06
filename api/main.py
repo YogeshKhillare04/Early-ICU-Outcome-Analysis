@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -21,13 +22,9 @@ from src.features import construct_physiological_ratios, TRAJECTORY_VITALS
 
 api_logger = setup_logger("api_serving_engine")
 
-app = FastAPI(
-    title="Early ICU Outcome Analysis API",
-    version="2.7.0",
-    description="API for generating ICU mortality estimates and displaying the main model features behind each estimate."
-)
-
-# Loaded when the API starts.
+# ---------------------------------------------------------------------------
+# Global model variables — populated once at startup, reused for every request
+# ---------------------------------------------------------------------------
 MODEL_PAYLOAD = None
 LGBM_ENSEMBLE = None
 PYTORCH_STATE = None
@@ -39,8 +36,14 @@ SEQUENCE_FEATURE_NAMES = []
 SEQ_NORM_MEAN = None
 SEQ_NORM_STD = None
 
-@app.on_event("startup")
-def load_model_artifacts():
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Modern FastAPI lifespan context manager.
+    Code before 'yield' runs on startup; code after runs on shutdown.
+    Replaces the deprecated @app.on_event("startup") pattern.
+    """
     global MODEL_PAYLOAD, LGBM_ENSEMBLE, PYTORCH_STATE, FEATURE_CHECKLIST, SHAP_EXPLAINER
     global STACKER, STACKER_INPUT_ORDER, SEQUENCE_FEATURE_NAMES, SEQ_NORM_MEAN, SEQ_NORM_STD
     try:
@@ -65,13 +68,26 @@ def load_model_artifacts():
             FEATURE_CHECKLIST = MODEL_PAYLOAD.get("feature_names", [])
             base_estimator = LGBM_ENSEMBLE[0]
 
-        # SHAP is used to show the strongest feature contributions.
+        # SHAP explains which features pushed the risk score up or down.
         SHAP_EXPLAINER = shap.TreeExplainer(base_estimator)
-        api_logger.info(f"Model artifact loaded successfully. Feature dimensions: {len(FEATURE_CHECKLIST)}")
+        api_logger.info(f"Model loaded successfully. Feature count: {len(FEATURE_CHECKLIST)}")
 
     except Exception as e:
         api_logger.critical(f"Failed to load model artifacts: {str(e)}", exc_info=True)
-        raise RuntimeError(f"Startup Failure: {str(e)}")
+        raise RuntimeError(f"Startup failure: {str(e)}")
+
+    yield  # API is now running and handling requests
+
+    # Shutdown: nothing to clean up for this project
+    api_logger.info("API shutting down.")
+
+
+app = FastAPI(
+    title="Early ICU Outcome Analysis API",
+    version="2.7.0",
+    description="API for generating ICU mortality estimates and the main model features behind each estimate.",
+    lifespan=lifespan,
+)
 
 # --- PYDANTIC CONTRACT SCHEMAS ---
 class ObservationItem(BaseModel):
